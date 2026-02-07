@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "\n                INSERT OR REPLACE INTO processes_selected_cpus(process_id, cpu_id)\n                VALUES (?1, ?2);\n                ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": []
+  },
+  "hash": "1fb72770c147e23406863ae2aca599c84549cfa38c8884de4bd3f6163efbb6f1"
+}

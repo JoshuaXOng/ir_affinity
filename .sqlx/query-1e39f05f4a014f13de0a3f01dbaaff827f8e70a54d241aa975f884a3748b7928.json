@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "\n            CREATE TABLE IF NOT EXISTS processes (\n                id INTEGER PRIMARY KEY,\n                name TEXT\n            )\n            ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 0
+    },
+    "nullable": []
+  },
+  "hash": "1e39f05f4a014f13de0a3f01dbaaff827f8e70a54d241aa975f884a3748b7928"
+}

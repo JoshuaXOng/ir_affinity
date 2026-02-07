@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "\n            CREATE TABLE IF NOT EXISTS cpus (\n                id INTEGER PRIMARY KEY CHECK(id >= 0)\n            )\n            ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 0
+    },
+    "nullable": []
+  },
+  "hash": "eea9ece2b82ca4c01394e1dd588ac4e828b523e4cd76b96d6fd3c74581aba5fe"
+}

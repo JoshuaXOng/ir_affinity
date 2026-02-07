@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "\n            CREATE TABLE IF NOT EXISTS processes_selected_cpus (\n                process_id TEXT NOT NULL,\n                cpu_id INTEGER NOT NULL,\n                PRIMARY KEY (process_id, cpu_id)\n            )\n            ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 0
+    },
+    "nullable": []
+  },
+  "hash": "b2384343eaa808f3c050d7e87f5be2e1ba1f3c09543b434a32aa9ed528a0a90c"
+}

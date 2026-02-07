@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "\n            INSERT OR REPLACE INTO processes(id, name)\n            VALUES (?1, ?2);\n            ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": []
+  },
+  "hash": "04bdd85e9ce92404d4bb72e4f509225ecfc832b6d9f6e03df0c833a6e6c331ec"
+}
