@@ -20,6 +20,8 @@ define_to_dyn!(serde_json::Error);
 define_to_dyn!(sqlx::Error);
 define_to_dyn!(sqlx::migrate::MigrateError);
 
+define_to_dyn!(iced::Error);
+
 #[cfg(target_os = "windows")]
 define_to_dyn!(windows_service::Error);
 

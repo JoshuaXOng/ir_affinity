@@ -1,5 +1,6 @@
 use sqlx::SqlitePool;
 use sysinfo::{Process, System};
+use tokio::sync::watch;
 use tracing::info;
 
 use crate::{
@@ -15,30 +16,76 @@ use windows::Win32::System::Threading::{
     PROCESS_SET_INFORMATION, SetProcessAffinityMask,
 };
 
-pub const IRA_WORKER_NAME: &str = "ir_affinity.exe";
+const HEARTBEAT_STALE_PERIOD_SECONDS: i64 = 10;
 
 #[derive(Debug, Clone)]
-pub enum RunningStatus {
-    None,
-    One,
-    Many,
+pub struct WorkerHeartbeat {
+    at: chrono::DateTime<chrono::Utc>,
+    is_synced: bool,
+    error: Option<String>,
 }
 
-pub fn get_worker_status(system_info: &System) -> RunningStatus {
-    let iracing_simulators: Vec<&Process> = system_info
-        .processes_by_exact_name(IRA_WORKER_NAME.as_ref())
-        .collect();
-    info!("Got all Ir Affinity processes.");
+impl WorkerHeartbeat {
+    pub fn now(is_simulation_synced: bool, error: Option<String>) -> Self {
+        Self {
+            at: chrono::Utc::now(),
+            is_synced: is_simulation_synced,
+            error: None,
+        }
+    }
 
-    match iracing_simulators.len() {
-        0 => RunningStatus::None,
-        1 => RunningStatus::One,
-        _ => RunningStatus::Many,
+    pub fn get_at(&self) -> &chrono::DateTime<chrono::Utc> {
+        &self.at
+    }
+
+    pub fn get_is_synced(&self) -> &bool {
+        &self.is_synced
+    }
+
+    pub fn get_error(&self) -> &Option<String> {
+        &self.error
+    }
+
+    pub fn get_is_stale(&self) -> bool {
+        chrono::Utc::now() - self.at > chrono::Duration::seconds(HEARTBEAT_STALE_PERIOD_SECONDS)
     }
 }
 
-pub async fn get_are_simulators_affinity_synced(system_info: &System, sqlite_pool: &SqlitePool) -> ResultBtAny<bool> {
-    let persistent_store = PersistentStore::load(system_info, sqlite_pool).await?;
+const WORKER_COOLDOWN_PERIOD_SECONDS: u64 = 5;
+
+// TODO: Deal with unwraps, also display error messages in UI components.
+pub fn spawn_worker_task(
+    sqlite_pool: SqlitePool,
+    worker_status: watch::Sender<Option<WorkerHeartbeat>>,
+) {
+    tokio::task::spawn(async move {
+        let mut system_info = System::new();
+        system_info.refresh_all();
+
+        PersistentStore::create_ddl(&sqlite_pool).await.unwrap();
+
+        let worker_period = std::time::Duration::from_secs(WORKER_COOLDOWN_PERIOD_SECONDS);
+        loop {
+            let mut are_synced = get_are_simulators_affinity_synced(&system_info, &sqlite_pool).await.unwrap();
+
+            if !are_synced {
+                sync_simulators_affinity(&system_info, &sqlite_pool).await.unwrap();
+            }
+
+            are_synced = get_are_simulators_affinity_synced(&system_info, &sqlite_pool).await.unwrap();
+
+            worker_status.send_replace(Some(WorkerHeartbeat::now(are_synced, None)));
+
+            tokio::time::sleep(worker_period).await;
+        }
+    });
+}
+
+async fn get_are_simulators_affinity_synced(
+    system_info: &System,
+    sqlite_pool: &SqlitePool,
+) -> ResultBtAny<bool> {
+    let persistent_store = PersistentStore::load(system_info.cpus().len(), sqlite_pool).await?;
 
     let iracing_simulators: Vec<&Process> = system_info
         .processes_by_exact_name(persistent_store.process.as_ref())
@@ -86,11 +133,11 @@ fn get_cpu_affinity_of_process(process: &Process) -> ResultBtAny<usize> {
     todo!()
 }
 
-pub async fn sync_simulators_affinity(
+async fn sync_simulators_affinity(
     system_info: &System,
     sqlite_pool: &SqlitePool,
 ) -> ResultBtAny<()> {
-    let persistent_store = PersistentStore::load(system_info, sqlite_pool).await?;
+    let persistent_store = PersistentStore::load(system_info.cpus().len(), sqlite_pool).await?;
 
     let iracing_simulators: Vec<&Process> = system_info
         .processes_by_exact_name(persistent_store.process.as_ref())
@@ -103,18 +150,16 @@ pub async fn sync_simulators_affinity(
     Ok(())
 }
 
-pub async fn set_cpu_affinity_of_process(
+async fn set_cpu_affinity_of_process(
     process: &Process,
     system_info: &System,
     sqlite_pool: &SqlitePool,
 ) -> ResultBtAny<()> {
-    let persistent_store = PersistentStore::load(system_info, sqlite_pool).await?;
+    let persistent_store = PersistentStore::load(system_info.cpus().len(), sqlite_pool).await?;
     let cpu_selections = persistent_store.selections.to_mask();
 
     #[cfg(target_os = "windows")]
     {
-        // TODO: Do I need to close handle else memory leak?
-        // Implement Drop wrapper?
         let process = unsafe {
             let should_inherit_handle = false;
             let process = OpenProcess(

@@ -7,7 +7,6 @@ use sqlx::{
     SqlitePool,
     sqlite::{SqliteConnectOptions, SqliteJournalMode},
 };
-use sysinfo::System;
 use tracing::info;
 
 use crate::{errors::ResultBtAny, ir::DEFAULT_IRACING_SIMULATOR, selections::hashset_to_mask};
@@ -27,10 +26,7 @@ impl PersistentStore {
         Ok(get_configuration_directory()?.join(Self::CONFIGURATION_FILENAME))
     }
 
-    pub async fn load(
-        system_info: &System,
-        sqlite_pool: &SqlitePool,
-    ) -> ResultBtAny<PersistentStore> {
+    pub async fn load(cpu_count: usize, sqlite_pool: &SqlitePool) -> ResultBtAny<PersistentStore> {
         let process = sqlx::query!(
             "SELECT name FROM processes WHERE id = ?1",
             Self::MAIN_PROCESS_ID
@@ -52,15 +48,12 @@ impl PersistentStore {
 
             Self {
                 process: process.name,
-                selections: CpuSelections::new_preselected(
-                    cpu_selections,
-                    system_info.cpus().len(),
-                ),
+                selections: CpuSelections::new_preselected(cpu_selections, cpu_count),
             }
         } else {
             Self {
                 process: DEFAULT_IRACING_SIMULATOR.to_string(),
-                selections: CpuSelections::new_all_selected(system_info.cpus().len()),
+                selections: CpuSelections::new_all_selected(cpu_count),
             }
         };
 
@@ -184,6 +177,10 @@ impl CpuSelections {
 
     pub fn get_nonselected_string() -> String {
         String::from(Self::DISPLAY_TITLE) + Self::NONE_DISPLAY
+    }
+
+    pub fn get_cpu_count(&self) -> usize {
+        self.cpu_count
     }
 
     pub fn toggle_selection(&mut self, cpu_id: usize, should_activate: bool) -> ResultBtAny<()> {

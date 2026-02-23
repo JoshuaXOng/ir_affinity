@@ -3,17 +3,10 @@ name = "ir_affinity"
 version = "0.1.0"
 edition = "2024"
 
-[lib]
-name = "ir_affinity"
-path = "src/lib.rs"
-
-[[bin]]
-name = "ir_affinity"
-path = "src/ui/mod.rs"
-
 [dependencies]
 backon = "1.6.0"
 bt_error = { git = "https://github.com/JoshuaXOng/bt_error.git", tag = "v0.1.0", version = "0.1.0" }
+chrono = "0.4.43"
 directories = "6.0.0"
 iced = { version = "0.14.0", features = ["tokio"] }
 remoteprocess = "0.5.1"
