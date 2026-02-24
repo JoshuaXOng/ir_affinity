@@ -24,17 +24,17 @@ pub fn run_ui(
     status_receiver: watch::Receiver<Option<WorkerHeartbeat>>,
 ) -> iced::Result {
     iced::application(
-        move || IrAffinity::new(&persistent_store, &sqlite_pool, &status_receiver),
+        move || IrAffinity::new(&persistent_store, &sqlite_pool),
         IrAffinity::update,
         IrAffinity::view,
     )
     .title(MAIN_WINDOW_NAME)
     .window_size(INITIAL_WINDOW_SIZE)
     .resizable(IS_WINDOW_RESIZABLE)
-    .subscription(|_| {
+    .subscription(move |_| {
         let subscriptions = vec![
             selection::get_subscriptions().map(Message::CpuSelection),
-            status::get_subscriptions().map(Message::WorkerStatus),
+            status::get_subscriptions(&status_receiver).map(Message::WorkerStatus),
             get_subscriptions(),
         ];
         Subscription::batch(subscriptions)
@@ -53,15 +53,11 @@ struct IrAffinity {
 }
 
 impl IrAffinity {
-    fn new(
-        persistent_store: &PersistentStore,
-        sqlite_pool: &SqlitePool,
-        worker_status: &watch::Receiver<Option<WorkerHeartbeat>>,
-    ) -> Self {
+    fn new(persistent_store: &PersistentStore, sqlite_pool: &SqlitePool) -> Self {
         Self {
             simulator_name: persistent_store.process.clone(),
             cpu_selection: selection::CpuSelection::new(persistent_store.selections.clone()),
-            worker_status: WorkerStatus::new(worker_status.clone()),
+            worker_status: WorkerStatus::new(),
             sqlite: sqlite_pool.clone(),
             progress: 0,
             is_saving: false,

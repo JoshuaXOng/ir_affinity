@@ -1,3 +1,4 @@
+use crate::persistence::CpuSelections;
 use iced::Alignment;
 use iced::Element;
 use iced::Font;
@@ -7,7 +8,6 @@ use iced::alignment::Horizontal;
 use iced::font::Weight;
 use iced::widget::scrollable::Scrollbar;
 use iced::widget::{checkbox, column, container, scrollable, text};
-use crate::persistence::CpuSelections;
 
 pub struct CpuSelection {
     inner: CpuSelections,

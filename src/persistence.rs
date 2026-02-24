@@ -33,6 +33,7 @@ impl PersistentStore {
         )
         .fetch_optional(sqlite_pool)
         .await?;
+        info!("Queried simulation process name.");
 
         let self_ = if let Some(process) = process {
             let mut cpu_selections = HashSet::new();
@@ -42,6 +43,7 @@ impl PersistentStore {
                 Self::MAIN_PROCESS_ID
             )
             .fetch(sqlite_pool);
+            info!("Queried selected CPUs.");
             while let Some(relation) = relations.try_next().await? {
                 cpu_selections.insert(relation.cpu_id.try_into()?);
             }
@@ -57,8 +59,6 @@ impl PersistentStore {
             }
         };
 
-        info!("Loaded config.");
-
         Ok(self_)
     }
 
@@ -66,18 +66,21 @@ impl PersistentStore {
         let to_sqlite = Self::get_configuration_file()?;
         if let Some(parent) = to_sqlite.parent() {
             fs::create_dir_all(parent)?;
+            info!("Created directories to `{}`.", parent.to_string_lossy());
         }
         let connection_options = SqliteConnectOptions::from_str(
             format!("sqlite://{}", to_sqlite.to_string_lossy()).as_str(),
         )?
         .journal_mode(SqliteJournalMode::Wal);
         let sqlite_pool = SqlitePool::connect_with(connection_options).await?;
+        info!("Connected to SQLite.");
 
         Ok(sqlite_pool)
     }
 
     pub async fn create_ddl(sqlite_pool: &SqlitePool) -> ResultBtAny<()> {
         sqlx::migrate!("./migrations").run(sqlite_pool).await?;
+        info!("Ran migrations.");
         Ok(())
     }
 
@@ -93,6 +96,7 @@ impl PersistentStore {
         )
         .execute(&mut *transaction)
         .await?;
+        info!("Deleted selected CPUs.");
 
         sqlx::query!(
             r#"
@@ -104,6 +108,7 @@ impl PersistentStore {
         )
         .execute(&mut *transaction)
         .await?;
+        info!("Inserted process name.");
         for &cpu_selection in self.selections.inner.iter() {
             let cpu_selection = u32::try_from(cpu_selection)?;
 
@@ -116,6 +121,7 @@ impl PersistentStore {
             )
             .execute(&mut *transaction)
             .await?;
+            info!("Inserted existing CPUs.");
 
             sqlx::query!(
                 r#"
@@ -127,10 +133,10 @@ impl PersistentStore {
             )
             .execute(&mut *transaction)
             .await?;
+            info!("Created selected CPUs relationship.");
         }
 
         transaction.commit().await?;
-        info!("Saved config.");
 
         Ok(())
     }
@@ -215,7 +221,7 @@ impl Display for CpuSelections {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}", Self::DISPLAY_TITLE)?;
 
-        let is_none = self.inner.len() == 0;
+        let is_none = self.inner.is_empty();
         let is_all = self.inner.len() == self.cpu_count;
         if is_none {
             write!(f, "{}", Self::NONE_DISPLAY)
