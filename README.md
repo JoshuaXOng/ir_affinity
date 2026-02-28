@@ -2,7 +2,8 @@
 
 For setting the CPU affinity of a process.
 
-Mainly for iRacing where the simulator executable is created from their Electron application.
+Mainly for iRacing where the simulator process is created sometime after
+interacting with their Desktop application.
 
 ## Example
 

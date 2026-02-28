@@ -1,5 +1,7 @@
+use std::ffi::OsStr;
+
 use sqlx::SqlitePool;
-use sysinfo::{Process, System};
+use sysinfo::{Process, ProcessesToUpdate, System};
 use tokio::{sync::watch, task::JoinHandle};
 use tracing::info;
 
@@ -7,7 +9,6 @@ use crate::{
     errors::ResultBtAny,
     persistence::{CpuSelections, PersistentStore},
     selections::mask_to_hashset,
-    unwrap_or,
 };
 #[cfg(target_os = "windows")]
 use windows::Win32::Foundation::CloseHandle;
@@ -19,7 +20,7 @@ use windows::Win32::System::Threading::{
 
 const HEARTBEAT_STALE_PERIOD_SECONDS: i64 = 10;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct WorkerHeartbeat {
     at: chrono::DateTime<chrono::Utc>,
     is_synced: Option<bool>,
@@ -61,71 +62,150 @@ pub fn spawn_worker_task(
     tokio::task::spawn(async move {
         let mut system_info = System::new();
         system_info.refresh_all();
-        info!("Refreshing system info.");
+        info!("Refreshing all system info.");
 
-        let worker_period = std::time::Duration::from_secs(WORKER_COOLDOWN_PERIOD_SECONDS);
+        let mut worker_operations = WorkerOperations {
+            sqlite: sqlite_pool,
+        };
         loop {
-            tokio::time::sleep(worker_period).await;
-
-            let persistent_store = unwrap_or!(
-                PersistentStore::load(system_info.cpus().len(), &sqlite_pool).await,
-                e,
-                {
-                    worker_status
-                        .send_replace(Some(WorkerHeartbeat::now(None, Some(e.get().to_string()))));
-                    continue;
-                }
-            );
-
-            let iracing_simulators: Vec<&Process> = system_info
-                .processes_by_exact_name(persistent_store.process.as_ref())
-                .collect();
-            let are_no_simulators = iracing_simulators.is_empty();
-            if are_no_simulators {
-                worker_status.send_replace(Some(WorkerHeartbeat::now(None, None)));
-            } else {
-                let mut are_synced = unwrap_or!(
-                    get_are_simulators_affinity_synced(&persistent_store, &system_info).await,
-                    e,
-                    {
-                        worker_status.send_replace(Some(WorkerHeartbeat::now(
-                            None,
-                            Some(e.get().to_string()),
-                        )));
-                        continue;
-                    }
-                );
-
-                if !are_synced {
-                    unwrap_or!(
-                        sync_simulators_affinity(&persistent_store, &system_info).await,
-                        e,
-                        {
-                            worker_status.send_replace(Some(WorkerHeartbeat::now(
-                                Some(are_synced),
-                                Some(e.get().to_string()),
-                            )));
-                            continue;
-                        }
-                    );
-                }
-
-                are_synced = unwrap_or!(
-                    get_are_simulators_affinity_synced(&persistent_store, &system_info).await,
-                    e,
-                    {
-                        worker_status.send_replace(Some(WorkerHeartbeat::now(
-                            Some(are_synced),
-                            Some(e.get().to_string()),
-                        )));
-                        continue;
-                    }
-                );
-
-                worker_status.send_replace(Some(WorkerHeartbeat::now(Some(are_synced), None)));
+            if run_worker_logic(&mut worker_operations, &mut system_info, &worker_status)
+                .await
+                .is_err()
+            {
+                continue;
             }
         }
     })
+}
+
+pub(crate) async fn run_worker_logic<WOps: WorkerOperations_>(
+    worker_operations: &mut WOps,
+    system_info: &mut System,
+    worker_status: &watch::Sender<Option<WorkerHeartbeat>>,
+) -> ResultBtAny<()> {
+    worker_operations.sleep().await;
+
+    let persistent_store = worker_operations
+        .load_store(system_info)
+        .await
+        .inspect_err(|e| {
+            worker_status.send_replace(Some(WorkerHeartbeat::now(None, Some(e.get().to_string()))));
+        })?;
+
+    system_info.refresh_processes(ProcessesToUpdate::All, true);
+    info!("Refreshing system process info.");
+
+    let iracing_simulators =
+        worker_operations.get_processes_by_exact_name(system_info, &persistent_store.process);
+    let are_no_simulators = iracing_simulators.is_empty();
+    if are_no_simulators {
+        worker_status.send_replace(Some(WorkerHeartbeat::now(None, None)));
+    } else {
+        let mut are_synced = worker_operations
+            .get_are_synced(&persistent_store, system_info)
+            .await
+            .inspect_err(|e| {
+                worker_status
+                    .send_replace(Some(WorkerHeartbeat::now(None, Some(e.get().to_string()))));
+            })?;
+
+        if !are_synced {
+            worker_operations
+                .sync_simulators(&persistent_store, system_info)
+                .await
+                .inspect_err(|e| {
+                    worker_status.send_replace(Some(WorkerHeartbeat::now(
+                        Some(are_synced),
+                        Some(e.get().to_string()),
+                    )));
+                })?;
+        }
+
+        are_synced = worker_operations
+            .get_are_synced(&persistent_store, system_info)
+            .await
+            .inspect_err(|e| {
+                worker_status.send_replace(Some(WorkerHeartbeat::now(
+                    Some(are_synced),
+                    Some(e.get().to_string()),
+                )));
+            })?;
+
+        worker_status.send_replace(Some(WorkerHeartbeat::now(Some(are_synced), None)));
+    };
+
+    Ok(())
+}
+
+struct WorkerOperations {
+    sqlite: SqlitePool,
+}
+
+pub(crate) trait WorkerOperations_ {
+    async fn sleep(&mut self);
+    async fn load_store(&mut self, system_info: &System) -> ResultBtAny<PersistentStore>;
+    fn get_processes_by_exact_name(&mut self, system_info: &System, name: &str) -> Vec<IrAProcess>;
+    async fn get_are_synced(
+        &mut self,
+        persistent_store: &PersistentStore,
+        system_info: &System,
+    ) -> ResultBtAny<bool>;
+    async fn sync_simulators(
+        &mut self,
+        persistent_store: &PersistentStore,
+        system_info: &System,
+    ) -> ResultBtAny<()>;
+}
+
+impl WorkerOperations_ for WorkerOperations {
+    async fn sleep(&mut self) {
+        let worker_period = std::time::Duration::from_secs(WORKER_COOLDOWN_PERIOD_SECONDS);
+        tokio::time::sleep(worker_period).await;
+    }
+
+    async fn load_store(&mut self, system_info: &System) -> ResultBtAny<PersistentStore> {
+        PersistentStore::load(system_info.cpus().len(), &self.sqlite).await
+    }
+
+    fn get_processes_by_exact_name(
+        &mut self,
+        system_info: &System,
+        exact_name: &str,
+    ) -> Vec<IrAProcess> {
+        system_info
+            .processes_by_exact_name(OsStr::new(exact_name))
+            .map(|process| process.into())
+            .collect()
+    }
+
+    async fn get_are_synced(
+        &mut self,
+        persistent_store: &PersistentStore,
+        system_info: &System,
+    ) -> ResultBtAny<bool> {
+        get_are_simulators_affinity_synced(persistent_store, system_info).await
+    }
+
+    async fn sync_simulators(
+        &mut self,
+        persistent_store: &PersistentStore,
+        system_info: &System,
+    ) -> ResultBtAny<()> {
+        sync_simulators_affinity(persistent_store, system_info).await
+    }
+}
+
+pub(crate) struct IrAProcess {
+    #[allow(dead_code)]
+    pub id: u32,
+}
+
+impl From<&Process> for IrAProcess {
+    fn from(value: &Process) -> Self {
+        Self {
+            id: value.pid().as_u32(),
+        }
+    }
 }
 
 async fn get_are_simulators_affinity_synced(

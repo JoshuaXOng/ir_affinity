@@ -1,5 +1,5 @@
 #![cfg_attr(test, allow(unused))]
-#![windows_subsystem = "windows"]
+#![cfg_attr(all(not(test), windows), windows_subsystem = "windows")]
 
 use std::env::set_var;
 
@@ -18,6 +18,8 @@ pub mod errors;
 pub mod ir;
 pub mod persistence;
 pub mod selections;
+#[cfg(test)]
+pub mod tests;
 pub mod ui;
 pub mod worker;
 
