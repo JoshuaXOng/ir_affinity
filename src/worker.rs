@@ -356,6 +356,6 @@ async fn get_cpu_sets() -> ResultBtAny<Vec<SYSTEM_CPU_SET_INFORMATION>> {
 #[tokio::test]
 async fn getting_cpu_sets() {
     let cpu_sets = get_cpu_sets().await.unwrap();
-    assert!(cpu_sets.len() > 0);
-    assert!(cpu_sets.len() <= 12);
+    let system_info = System::new_all();
+    assert_eq!(cpu_sets.len(), system_info.cpus().len());
 }
