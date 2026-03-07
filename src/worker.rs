@@ -11,11 +11,15 @@ use crate::{
     selections::mask_to_hashset,
 };
 #[cfg(target_os = "windows")]
-use windows::Win32::Foundation::CloseHandle;
+use windows::Win32::Foundation::{CloseHandle, GetLastError};
 #[cfg(target_os = "windows")]
 use windows::Win32::System::Threading::{
     GetProcessAffinityMask, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
     PROCESS_SET_INFORMATION, SetProcessAffinityMask,
+};
+#[cfg(target_os = "windows")]
+use windows::Win32::System::SystemInformation::{
+    GetSystemCpuSetInformation, SYSTEM_CPU_SET_INFORMATION
 };
 
 const HEARTBEAT_STALE_PERIOD_SECONDS: i64 = 10;
@@ -257,7 +261,7 @@ fn get_cpu_affinity_of_process(#[allow(unused_variables)] process: &Process) -> 
         Ok(process_mask)
     }
 
-    #[cfg(target_os = "linux")]
+    #[cfg(not(target_os = "windows"))]
     unimplemented!()
 }
 
@@ -303,7 +307,55 @@ async fn set_cpu_affinity_of_process(
             is_set?;
             info!("Set CPU affinity.");
         }
+
+        Ok(())
     }
 
-    Ok(())
+    #[cfg(not(target_os = "windows"))]
+    unimplemented!();
+}
+
+async fn get_cpu_sets() -> ResultBtAny<Vec<SYSTEM_CPU_SET_INFORMATION>> {
+    #[cfg(target_os = "windows")]
+    {
+        let payload_size = std::mem::size_of::<SYSTEM_CPU_SET_INFORMATION>();
+
+        let mut cpu_sets: [SYSTEM_CPU_SET_INFORMATION; 64] = [SYSTEM_CPU_SET_INFORMATION::default(); 64];
+        let mut output_size: u32 = 0;
+        let subject_process = None;
+        let reserved_flag = 0;
+        unsafe {
+            let is_success = GetSystemCpuSetInformation(
+                Some(cpu_sets.as_mut_ptr()),
+                (cpu_sets.len() * payload_size) as u32,
+                &mut output_size,
+                subject_process,
+                Some(reserved_flag)
+            );
+            if (!is_success).into() {
+                Err(format!("WinAPI call failed with code `{}`.", GetLastError().0))?;
+            }
+        };
+        let are_no_sets = output_size == 0;
+        if are_no_sets {
+            Err("There are no CPU sets!?")?;
+        }
+
+        let output_length = output_size as usize / payload_size;
+
+        Ok(cpu_sets[0..output_length].to_vec())
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    unimplemented!();
+}
+
+// TODO: EAC implies need to stateful approach...
+// Instead try CPU sets, high prio., power settings and core parking.
+// Maybe also partitioning processes' core usage and system timer mods.
+#[tokio::test]
+async fn getting_cpu_sets() {
+    let cpu_sets = get_cpu_sets().await.unwrap();
+    assert!(cpu_sets.len() > 0);
+    assert!(cpu_sets.len() <= 12);
 }

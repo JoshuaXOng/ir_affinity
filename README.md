@@ -3,7 +3,7 @@
 For setting the CPU affinity of a process.
 
 Mainly for iRacing where the simulator process is created sometime after
-interacting with their Desktop application.
+interacting with their desktop application.
 
 ## Example
 

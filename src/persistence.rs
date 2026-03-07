@@ -177,6 +177,17 @@ impl CpuSelections {
         }
     }
 
+    pub fn new_evens_selected(cpu_count: usize) -> Self {
+        let mut cpu_selections = HashSet::new();
+        for cpu_selection in (0..cpu_count).step_by(2) {
+            cpu_selections.insert(cpu_selection);
+        }
+        Self {
+            inner: cpu_selections,
+            cpu_count,
+        }
+    }
+
     pub fn get_is_selected(&self, cpu_id: &usize) -> bool {
         self.inner.contains(cpu_id)
     }

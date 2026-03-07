@@ -1,5 +1,4 @@
 #![cfg_attr(test, allow(unused))]
-#![cfg_attr(all(not(test), windows), windows_subsystem = "windows")]
 
 use std::env::set_var;
 
