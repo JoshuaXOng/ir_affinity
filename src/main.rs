@@ -22,6 +22,7 @@ pub mod selections;
 pub mod tests;
 pub mod ui;
 pub mod worker;
+pub mod wrappers;
 
 fn main() {
     if let Err(e) = main_() {

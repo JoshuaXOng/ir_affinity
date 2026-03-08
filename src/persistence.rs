@@ -228,6 +228,12 @@ impl PartialEq for CpuSelections {
     }
 }
 
+impl<'a> From<&'a PersistentStore> for &'a CpuSelections {
+    fn from(value: &'a PersistentStore) -> Self {
+        &value.selections
+    }
+}
+
 impl Display for CpuSelections {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}", Self::DISPLAY_TITLE)?;

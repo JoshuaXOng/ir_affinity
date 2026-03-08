@@ -3,23 +3,26 @@ use std::ffi::OsStr;
 use sqlx::SqlitePool;
 use sysinfo::{Process, ProcessesToUpdate, System};
 use tokio::{sync::watch, task::JoinHandle};
-use tracing::info;
+use tracing::{error, info};
 
+#[cfg(target_os = "windows")]
+use crate::wrappers::SystemCpuSetInformation;
 use crate::{
     errors::ResultBtAny,
+    ir::IRACING_SIMULATOR_SPAWNERS,
     persistence::{CpuSelections, PersistentStore},
     selections::mask_to_hashset,
 };
 #[cfg(target_os = "windows")]
 use windows::Win32::Foundation::{CloseHandle, GetLastError};
 #[cfg(target_os = "windows")]
+use windows::Win32::System::SystemInformation::{
+    GetSystemCpuSetInformation, SYSTEM_CPU_SET_INFORMATION,
+};
+#[cfg(target_os = "windows")]
 use windows::Win32::System::Threading::{
     GetProcessAffinityMask, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
     PROCESS_SET_INFORMATION, SetProcessAffinityMask,
-};
-#[cfg(target_os = "windows")]
-use windows::Win32::System::SystemInformation::{
-    GetSystemCpuSetInformation, SYSTEM_CPU_SET_INFORMATION
 };
 
 const HEARTBEAT_STALE_PERIOD_SECONDS: i64 = 10;
@@ -72,12 +75,7 @@ pub fn spawn_worker_task(
             sqlite: sqlite_pool,
         };
         loop {
-            if run_worker_logic(&mut worker_operations, &mut system_info, &worker_status)
-                .await
-                .is_err()
-            {
-                continue;
-            }
+            _ = run_worker_logic(&mut worker_operations, &mut system_info, &worker_status).await;
         }
     })
 }
@@ -93,7 +91,9 @@ pub(crate) async fn run_worker_logic<WOps: WorkerOperations_>(
         .load_store(system_info)
         .await
         .inspect_err(|e| {
-            worker_status.send_replace(Some(WorkerHeartbeat::now(None, Some(e.get().to_string()))));
+            let is_synced = None;
+            let e = Some(e.get().to_string());
+            worker_status.send_replace(Some(WorkerHeartbeat::now(is_synced, e)));
         })?;
 
     system_info.refresh_processes(ProcessesToUpdate::All, true);
@@ -101,42 +101,69 @@ pub(crate) async fn run_worker_logic<WOps: WorkerOperations_>(
 
     let iracing_simulators =
         worker_operations.get_processes_by_exact_name(system_info, &persistent_store.process);
-    let are_no_simulators = iracing_simulators.is_empty();
-    if are_no_simulators {
-        worker_status.send_replace(Some(WorkerHeartbeat::now(None, None)));
-    } else {
-        let mut are_synced = worker_operations
-            .get_are_synced(&persistent_store, system_info)
-            .await
-            .inspect_err(|e| {
-                worker_status
-                    .send_replace(Some(WorkerHeartbeat::now(None, Some(e.get().to_string()))));
-            })?;
+    let are_any_simulators = !iracing_simulators.is_empty();
 
-        if !are_synced {
-            worker_operations
-                .sync_simulators(&persistent_store, system_info)
+    let simulator_spawners =
+        worker_operations.get_processes_by_exact_name(system_info, IRACING_SIMULATOR_SPAWNERS);
+    let are_any_spawners = !simulator_spawners.is_empty();
+
+    match (are_any_simulators, are_any_spawners) {
+        (false, false) => {
+            let is_synced = None;
+            let e = None;
+            worker_status.send_replace(Some(WorkerHeartbeat::now(is_synced, e)));
+        }
+        (false, true) => {
+            let are_spawners_synced = worker_operations
+                .get_are_processes_synced(
+                    &simulator_spawners,
+                    (&persistent_store).into(),
+                    &system_info,
+                )
                 .await
                 .inspect_err(|e| {
-                    worker_status.send_replace(Some(WorkerHeartbeat::now(
-                        Some(are_synced),
-                        Some(e.get().to_string()),
-                    )));
+                    let is_synced = None;
+                    let e = Some(e.get().to_string());
+                    worker_status.send_replace(Some(WorkerHeartbeat::now(is_synced, e)));
                 })?;
+            if are_spawners_synced {
+                let is_synced = Some(true);
+                let e = None;
+                worker_status.send_replace(Some(WorkerHeartbeat::now(is_synced, e)));
+            } else {
+                let e = worker_operations
+                    .set_processes_affinity(&simulator_spawners, (&persistent_store).into())
+                    .await
+                    .err()
+                    .map(|e| e.get().to_string());
+                let is_synced = Some(e.is_none());
+                worker_status.send_replace(Some(WorkerHeartbeat::now(is_synced, e)));
+            }
         }
+        (true, _) => {
+            let are_simulators_synced = worker_operations
+                .get_are_processes_synced(
+                    &iracing_simulators,
+                    (&persistent_store).into(),
+                    &system_info,
+                )
+                .await;
+            let is_synced = are_simulators_synced.as_ref().ok().copied();
+            let e = are_simulators_synced.err().map(|e| e.get().to_string());
+            worker_status.send_replace(Some(WorkerHeartbeat::now(is_synced, e)));
 
-        are_synced = worker_operations
-            .get_are_synced(&persistent_store, system_info)
-            .await
-            .inspect_err(|e| {
-                worker_status.send_replace(Some(WorkerHeartbeat::now(
-                    Some(are_synced),
-                    Some(e.get().to_string()),
-                )));
-            })?;
-
-        worker_status.send_replace(Some(WorkerHeartbeat::now(Some(are_synced), None)));
-    };
+            if are_any_spawners {
+                _ = worker_operations
+                    .set_processes_affinity(
+                        &simulator_spawners,
+                        &CpuSelections::new_all_selected(system_info.cpus().len()),
+                    )
+                    .await
+                    // TODO: Expand heartbeat to send multiple errors, change frequency too.
+                    .inspect_err(|e| error!("{:?}", e));
+            }
+        }
+    }
 
     Ok(())
 }
@@ -149,15 +176,16 @@ pub(crate) trait WorkerOperations_ {
     async fn sleep(&mut self);
     async fn load_store(&mut self, system_info: &System) -> ResultBtAny<PersistentStore>;
     fn get_processes_by_exact_name(&mut self, system_info: &System, name: &str) -> Vec<IrAProcess>;
-    async fn get_are_synced(
+    async fn get_are_processes_synced(
         &mut self,
-        persistent_store: &PersistentStore,
+        candidate_processes: &[IrAProcess],
+        cpu_selections: &CpuSelections,
         system_info: &System,
     ) -> ResultBtAny<bool>;
-    async fn sync_simulators(
+    async fn set_processes_affinity(
         &mut self,
-        persistent_store: &PersistentStore,
-        system_info: &System,
+        candidate_processes: &[IrAProcess],
+        cpu_selections: &CpuSelections,
     ) -> ResultBtAny<()>;
 }
 
@@ -182,23 +210,30 @@ impl WorkerOperations_ for WorkerOperations {
             .collect()
     }
 
-    async fn get_are_synced(
+    async fn get_are_processes_synced(
         &mut self,
-        persistent_store: &PersistentStore,
+        candidate_processes: &[IrAProcess],
+        cpu_selections: &CpuSelections,
         system_info: &System,
     ) -> ResultBtAny<bool> {
-        get_are_simulators_affinity_synced(persistent_store, system_info).await
+        let cpu_selections = cpu_selections.into();
+        get_are_processes_affinity_synced(candidate_processes, cpu_selections, system_info).await
     }
 
-    async fn sync_simulators(
+    async fn set_processes_affinity(
         &mut self,
-        persistent_store: &PersistentStore,
-        system_info: &System,
+        candidate_processes: &[IrAProcess],
+        cpu_selections: &CpuSelections,
     ) -> ResultBtAny<()> {
-        sync_simulators_affinity(persistent_store, system_info).await
+        let cpu_selections = cpu_selections.into();
+        for candidate_process in candidate_processes {
+            set_cpu_affinity_of_process(candidate_process, cpu_selections).await?;
+        }
+        Ok(())
     }
 }
 
+#[derive(Clone)]
 pub(crate) struct IrAProcess {
     #[allow(dead_code)]
     pub id: u32,
@@ -212,21 +247,18 @@ impl From<&Process> for IrAProcess {
     }
 }
 
-async fn get_are_simulators_affinity_synced(
-    persistent_store: &PersistentStore,
+async fn get_are_processes_affinity_synced(
+    candidate_processes: &[IrAProcess],
+    cpu_selections: &CpuSelections,
     system_info: &System,
 ) -> ResultBtAny<bool> {
-    let iracing_simulators: Vec<&Process> = system_info
-        .processes_by_exact_name(persistent_store.process.as_ref())
-        .collect();
-
-    for iracing_simulator in iracing_simulators {
-        let cpu_affinity = get_cpu_affinity_of_process(iracing_simulator)?;
-        let cpu_selections = CpuSelections::new_preselected(
+    for simulator_spawner in candidate_processes.iter() {
+        let cpu_affinity = get_cpu_affinity_of_process(simulator_spawner)?;
+        let cpu_selections_ = CpuSelections::new_preselected(
             mask_to_hashset(&cpu_affinity),
             system_info.cpus().len(),
         );
-        let isnt_synced = cpu_selections != persistent_store.selections;
+        let isnt_synced = *cpu_selections != cpu_selections_;
         if isnt_synced {
             return Ok(false);
         }
@@ -235,14 +267,16 @@ async fn get_are_simulators_affinity_synced(
     Ok(true)
 }
 
-fn get_cpu_affinity_of_process(#[allow(unused_variables)] process: &Process) -> ResultBtAny<usize> {
+fn get_cpu_affinity_of_process(
+    #[allow(unused_variables)] process: &IrAProcess,
+) -> ResultBtAny<usize> {
     #[cfg(target_os = "windows")]
     unsafe {
         let should_inherit_handle = false;
         let process = OpenProcess(
             PROCESS_QUERY_LIMITED_INFORMATION,
             should_inherit_handle,
-            process.pid().as_u32(),
+            process.id,
         )?;
         info!("Opened process.");
 
@@ -265,37 +299,53 @@ fn get_cpu_affinity_of_process(#[allow(unused_variables)] process: &Process) -> 
     unimplemented!()
 }
 
-async fn sync_simulators_affinity(
-    persistent_store: &PersistentStore,
-    system_info: &System,
-) -> ResultBtAny<()> {
-    let iracing_simulators: Vec<&Process> = system_info
-        .processes_by_exact_name(persistent_store.process.as_ref())
-        .collect();
+#[cfg(target_os = "windows")]
+async fn get_cpu_sets() -> ResultBtAny<Vec<SYSTEM_CPU_SET_INFORMATION>> {
+    let payload_size = std::mem::size_of::<SYSTEM_CPU_SET_INFORMATION>();
 
-    for iracing_simulator in iracing_simulators {
-        set_cpu_affinity_of_process(iracing_simulator, persistent_store).await?;
+    let mut cpu_sets: [SYSTEM_CPU_SET_INFORMATION; 64] =
+        [SYSTEM_CPU_SET_INFORMATION::default(); 64];
+    let mut output_size: u32 = 0;
+    let subject_process = None;
+    let reserved_flag = 0;
+    unsafe {
+        let is_success = GetSystemCpuSetInformation(
+            Some(cpu_sets.as_mut_ptr()),
+            (cpu_sets.len() * payload_size) as u32,
+            &mut output_size,
+            subject_process,
+            Some(reserved_flag),
+        );
+        info!("Got CPU set info.");
+        if (!is_success).into() {
+            Err(format!(
+                "WinAPI call failed with code `{}`.",
+                GetLastError().0
+            ))?;
+        }
+    };
+    let are_no_sets = output_size == 0;
+    if are_no_sets {
+        Err("There are no CPU sets!?")?;
     }
 
-    Ok(())
+    let output_length = output_size as usize / payload_size;
+
+    Ok(cpu_sets[0..output_length].to_vec())
 }
 
 async fn set_cpu_affinity_of_process(
-    #[allow(unused_variables)] process: &Process,
-    persistent_store: &PersistentStore,
+    #[allow(unused_variables)] process: &IrAProcess,
+    cpu_selections: &CpuSelections,
 ) -> ResultBtAny<()> {
     #[allow(unused_variables)]
-    let cpu_selections = persistent_store.selections.to_mask();
+    let cpu_selections = cpu_selections.to_mask();
 
     #[cfg(target_os = "windows")]
     {
         let process = unsafe {
             let should_inherit_handle = false;
-            let process = OpenProcess(
-                PROCESS_SET_INFORMATION,
-                should_inherit_handle,
-                process.pid().as_u32(),
-            )?;
+            let process = OpenProcess(PROCESS_SET_INFORMATION, should_inherit_handle, process.id)?;
             info!("Got process handle.");
             process
         };
@@ -312,50 +362,13 @@ async fn set_cpu_affinity_of_process(
     }
 
     #[cfg(not(target_os = "windows"))]
-    unimplemented!();
+    unimplemented!()
 }
 
-async fn get_cpu_sets() -> ResultBtAny<Vec<SYSTEM_CPU_SET_INFORMATION>> {
-    #[cfg(target_os = "windows")]
-    {
-        let payload_size = std::mem::size_of::<SYSTEM_CPU_SET_INFORMATION>();
-
-        let mut cpu_sets: [SYSTEM_CPU_SET_INFORMATION; 64] = [SYSTEM_CPU_SET_INFORMATION::default(); 64];
-        let mut output_size: u32 = 0;
-        let subject_process = None;
-        let reserved_flag = 0;
-        unsafe {
-            let is_success = GetSystemCpuSetInformation(
-                Some(cpu_sets.as_mut_ptr()),
-                (cpu_sets.len() * payload_size) as u32,
-                &mut output_size,
-                subject_process,
-                Some(reserved_flag)
-            );
-            if (!is_success).into() {
-                Err(format!("WinAPI call failed with code `{}`.", GetLastError().0))?;
-            }
-        };
-        let are_no_sets = output_size == 0;
-        if are_no_sets {
-            Err("There are no CPU sets!?")?;
-        }
-
-        let output_length = output_size as usize / payload_size;
-
-        Ok(cpu_sets[0..output_length].to_vec())
-    }
-
-    #[cfg(not(target_os = "windows"))]
-    unimplemented!();
-}
-
-// TODO: EAC implies need to stateful approach...
-// Instead try CPU sets, high prio., power settings and core parking.
-// Maybe also partitioning processes' core usage and system timer mods.
 #[tokio::test]
+#[cfg(target_os = "windows")]
 async fn getting_cpu_sets() {
-    let cpu_sets = get_cpu_sets().await.unwrap();
+    let cpu_sets: Vec<_> = get_cpu_sets().await.unwrap();
     let system_info = System::new_all();
     assert_eq!(cpu_sets.len(), system_info.cpus().len());
 }
