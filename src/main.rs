@@ -9,7 +9,10 @@ use tokio::sync::watch;
 use tracing::{error, info};
 
 use crate::{
-    errors::ResultBtAny, persistence::PersistentStore, ui::run_ui, worker::spawn_worker_task,
+    errors::ResultBtAny,
+    persistence::PersistentStore,
+    ui::{run_error_ui, run_initialized_ui},
+    worker::spawn_worker_task,
 };
 
 define_with_backtrace!();
@@ -27,6 +30,9 @@ pub mod wrappers;
 fn main() {
     if let Err(e) = main_() {
         error!("{:?}", e);
+        if let Err(e) = run_error_ui(e.get().to_string()) {
+            error!("{:?}", e);
+        }
         std::process::exit(1);
     } else {
         std::process::exit(0);
@@ -60,10 +66,9 @@ fn main_() -> ResultBtAny<()> {
             .retry(ExponentialBuilder::default()),
     )?;
 
-    // TODO: Display error messages in UI components.
     other_runtime.spawn_blocking(|| spawn_worker_task(sqlite_pool_2, status_sender));
 
-    run_ui(persistent_store, sqlite_pool_3, status_receiver)?;
+    run_initialized_ui(persistent_store, sqlite_pool_3, status_receiver)?;
 
     Ok(())
 }

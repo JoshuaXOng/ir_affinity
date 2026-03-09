@@ -1,14 +1,16 @@
 use crate::ir::DEFAULT_IRACING_SIMULATOR;
 use crate::persistence::PersistentStore;
+pub use crate::ui::errors::run_error_ui;
 use crate::worker::WorkerHeartbeat;
 use iced::font::Weight;
 use iced::widget::{button, column, rule, scrollable, text, text_input};
-use iced::{Center, Element, Font, Length, Subscription, Task};
+use iced::{Alignment, Element, Font, Length, Subscription, Task};
 use sqlx::SqlitePool;
 use status::WorkerStatus;
 use tokio::sync::watch;
 use tracing::error;
 
+mod errors;
 mod selection;
 mod status;
 
@@ -18,7 +20,7 @@ const INITIAL_WINDOW_SIZE: (u32, u32) = (400, 350);
 
 const IS_WINDOW_RESIZABLE: bool = false;
 
-pub fn run_ui(
+pub fn run_initialized_ui(
     persistent_store: PersistentStore,
     sqlite_pool: SqlitePool,
     status_receiver: watch::Receiver<Option<WorkerHeartbeat>>,
@@ -105,7 +107,7 @@ impl IrAffinity {
             .width(Length::Fill)
             .spacing(16)
             .padding(16)
-            .align_x(Center),
+            .align_x(Alignment::Center),
         )
         .into()
     }
