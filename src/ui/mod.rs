@@ -1,4 +1,4 @@
-use crate::ir::DEFAULT_IRACING_SIMULATOR;
+use crate::ir::{DEFAULT_IRACING_SIMULATOR, DEFAULT_SIMULATOR_SPAWNERS};
 use crate::persistence::PersistentStore;
 pub use crate::ui::errors::run_error_ui;
 use crate::worker::WorkerHeartbeat;
@@ -16,7 +16,7 @@ mod status;
 
 const MAIN_WINDOW_NAME: &str = "Ir Affinity";
 
-const INITIAL_WINDOW_SIZE: (u32, u32) = (400, 350);
+const INITIAL_WINDOW_SIZE: (u32, u32) = (400, 420);
 
 const IS_WINDOW_RESIZABLE: bool = false;
 
@@ -45,6 +45,7 @@ pub fn run_initialized_ui(
 }
 
 struct IrAffinity {
+    spawner_name: String,
     simulator_name: String,
     cpu_selection: selection::CpuSelection,
     worker_status: status::WorkerStatus,
@@ -57,7 +58,8 @@ struct IrAffinity {
 impl IrAffinity {
     fn new(persistent_store: &PersistentStore, sqlite_pool: &SqlitePool) -> Self {
         Self {
-            simulator_name: persistent_store.process.clone(),
+            spawner_name: persistent_store.spawner.clone(),
+            simulator_name: persistent_store.simulator.clone(),
             cpu_selection: selection::CpuSelection::new(persistent_store.selections.clone()),
             worker_status: WorkerStatus::new(),
             sqlite: sqlite_pool.clone(),
@@ -70,15 +72,26 @@ impl IrAffinity {
     fn view(&self) -> Element<'_, Message> {
         let error_message = self.error.clone().map(|e| text(e).style(text::danger));
 
-        let process_component = {
-            let bold = Font {
-                weight: Weight::Bold,
-                ..Font::default()
-            };
+        let bold = Font {
+            weight: Weight::Bold,
+            ..Font::default()
+        };
+
+        let spawner_component = {
+            column![
+                text("iRacing UI").size(16).font(bold),
+                text_input(DEFAULT_SIMULATOR_SPAWNERS, &self.spawner_name)
+                    .on_input(Message::ChangedSpawner)
+                    .size(16)
+            ]
+            .spacing(4)
+        };
+
+        let simulation_component = {
             column![
                 text("iRacing Simulation").size(16).font(bold),
                 text_input(DEFAULT_IRACING_SIMULATOR, &self.simulator_name)
-                    .on_input(Message::ChangedText)
+                    .on_input(Message::ChangedSimulation)
                     .size(16)
             ]
             .spacing(4)
@@ -98,7 +111,8 @@ impl IrAffinity {
         scrollable(
             column![
                 error_message,
-                process_component,
+                spawner_component,
+                simulation_component,
                 selection_component,
                 save_button,
                 rule::horizontal(2),
@@ -114,7 +128,11 @@ impl IrAffinity {
 
     fn update(&mut self, message: Message) -> Task<Message> {
         match message {
-            Message::ChangedText(simulator_name) => {
+            Message::ChangedSpawner(spawner_name) => {
+                self.spawner_name = spawner_name;
+                Task::none()
+            }
+            Message::ChangedSimulation(simulator_name) => {
                 self.simulator_name = simulator_name;
                 Task::none()
             }
@@ -126,11 +144,13 @@ impl IrAffinity {
                 self.is_saving = true;
 
                 let sqlite_pool = self.sqlite.clone();
-                let process_name = self.simulator_name.clone();
+                let spawner_name = self.spawner_name.clone();
+                let simulator_name = self.simulator_name.clone();
                 let cpu_selections = self.cpu_selection.get_inner().clone();
                 Task::future(async move {
                     let is_success = PersistentStore {
-                        process: process_name,
+                        spawner: spawner_name,
+                        simulator: simulator_name,
                         selections: cpu_selections,
                     }
                     .save(&sqlite_pool)
@@ -160,7 +180,8 @@ impl IrAffinity {
 
 #[derive(Debug, Clone)]
 enum Message {
-    ChangedText(String),
+    ChangedSpawner(String),
+    ChangedSimulation(String),
     CpuSelection(selection::Message),
     ShouldSave,
     ShouldSave_(Result<(), String>),

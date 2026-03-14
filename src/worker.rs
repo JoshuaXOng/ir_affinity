@@ -9,7 +9,6 @@ use tracing::{error, info};
 use crate::wrappers::SystemCpuSetInformation;
 use crate::{
     errors::ResultBtAny,
-    ir::IRACING_SIMULATOR_SPAWNERS,
     persistence::{CpuSelections, PersistentStore},
     selections::mask_to_hashset,
 };
@@ -100,11 +99,11 @@ pub(crate) async fn run_worker_logic<WOps: WorkerOperations_>(
     info!("Refreshing system process info.");
 
     let iracing_simulators =
-        worker_operations.get_processes_by_exact_name(system_info, &persistent_store.process);
+        worker_operations.get_processes_by_exact_name(system_info, &persistent_store.simulator);
     let are_any_simulators = !iracing_simulators.is_empty();
 
     let simulator_spawners =
-        worker_operations.get_processes_by_exact_name(system_info, IRACING_SIMULATOR_SPAWNERS);
+        worker_operations.get_processes_by_exact_name(system_info, &persistent_store.spawner);
     let are_any_spawners = !simulator_spawners.is_empty();
 
     match (are_any_simulators, are_any_spawners) {

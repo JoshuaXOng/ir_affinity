@@ -9,38 +9,50 @@ use sqlx::{
 };
 use tracing::info;
 
-use crate::{errors::ResultBtAny, ir::DEFAULT_IRACING_SIMULATOR, selections::hashset_to_mask};
+use crate::{errors::ResultBtAny, ir::{DEFAULT_IRACING_SIMULATOR, DEFAULT_SIMULATOR_SPAWNERS}, selections::hashset_to_mask};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PersistentStore {
-    pub process: String,
+    pub spawner: String,
+    pub simulator: String,
     pub selections: CpuSelections,
 }
 
 impl PersistentStore {
     const CONFIGURATION_FILENAME: &str = "store.sqlite";
 
-    const MAIN_PROCESS_ID: u32 = 0;
+    const SPAWNER_PROCESS_ID: u32 = 1;
+    const SIMULATOR_PROCESS_ID: u32 = 0;
 
     pub fn get_configuration_file() -> ResultBtAny<PathBuf> {
         Ok(get_configuration_directory()?.join(Self::CONFIGURATION_FILENAME))
     }
 
     pub async fn load(cpu_count: usize, sqlite_pool: &SqlitePool) -> ResultBtAny<PersistentStore> {
-        let process = sqlx::query!(
+        let simulator_process = sqlx::query!(
             "SELECT name FROM processes WHERE id = ?1",
-            Self::MAIN_PROCESS_ID
+            Self::SIMULATOR_PROCESS_ID
         )
         .fetch_optional(sqlite_pool)
         .await?;
         info!("Queried simulation process name.");
 
-        let self_ = if let Some(process) = process {
+        let spawner_name = sqlx::query!(
+            "SELECT name FROM processes WHERE id = ?1",
+            Self::SPAWNER_PROCESS_ID
+        )
+        .fetch_optional(sqlite_pool)
+        .await?
+        .map(|process| process.name)
+        .unwrap_or(DEFAULT_SIMULATOR_SPAWNERS.to_string());
+        info!("Queried spawner process name.");
+
+        let self_ = if let Some(simulator_process) = simulator_process {
             let mut cpu_selections = HashSet::new();
 
             let mut relations = sqlx::query!(
                 "SELECT cpu_id FROM processes_selected_cpus WHERE process_id = ?1",
-                Self::MAIN_PROCESS_ID
+                Self::SIMULATOR_PROCESS_ID
             )
             .fetch(sqlite_pool);
             info!("Queried selected CPUs.");
@@ -49,12 +61,14 @@ impl PersistentStore {
             }
 
             Self {
-                process: process.name,
+                spawner: spawner_name,
+                simulator: simulator_process.name,
                 selections: CpuSelections::new_preselected(cpu_selections, cpu_count),
             }
         } else {
             Self {
-                process: DEFAULT_IRACING_SIMULATOR.to_string(),
+                spawner: spawner_name,
+                simulator: DEFAULT_IRACING_SIMULATOR.to_string(),
                 selections: CpuSelections::new_all_selected(cpu_count),
             }
         };
@@ -92,7 +106,7 @@ impl PersistentStore {
             DELETE FROM processes_selected_cpus
             WHERE process_id = ?1;
             "#,
-            Self::MAIN_PROCESS_ID,
+            Self::SIMULATOR_PROCESS_ID,
         )
         .execute(&mut *transaction)
         .await?;
@@ -103,12 +117,24 @@ impl PersistentStore {
             INSERT OR REPLACE INTO processes (id, name)
             VALUES (?1, ?2);
             "#,
-            Self::MAIN_PROCESS_ID,
-            self.process
+            Self::SPAWNER_PROCESS_ID,
+            self.spawner
         )
         .execute(&mut *transaction)
         .await?;
-        info!("Inserted process name.");
+        info!("Inserted spawner process name.");
+
+        sqlx::query!(
+            r#"
+            INSERT OR REPLACE INTO processes (id, name)
+            VALUES (?1, ?2);
+            "#,
+            Self::SIMULATOR_PROCESS_ID,
+            self.simulator
+        )
+        .execute(&mut *transaction)
+        .await?;
+        info!("Inserted simulator process name.");
         for &cpu_selection in self.selections.inner.iter() {
             let cpu_selection = u32::try_from(cpu_selection)?;
 
@@ -128,7 +154,7 @@ impl PersistentStore {
                 INSERT OR REPLACE INTO processes_selected_cpus (process_id, cpu_id)
                 VALUES (?1, ?2);
                 "#,
-                Self::MAIN_PROCESS_ID,
+                Self::SIMULATOR_PROCESS_ID,
                 cpu_selection,
             )
             .execute(&mut *transaction)

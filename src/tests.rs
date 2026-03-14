@@ -5,7 +5,7 @@ use tokio::sync::watch;
 
 use crate::{
     errors::ResultBtAny,
-    ir::{DEFAULT_IRACING_SIMULATOR, IRACING_SIMULATOR_SPAWNERS},
+    ir::{DEFAULT_IRACING_SIMULATOR, DEFAULT_SIMULATOR_SPAWNERS},
     persistence::{CpuSelections, PersistentStore},
     worker::{IrAProcess, WorkerHeartbeat, WorkerOperations_, run_worker_logic},
 };
@@ -24,7 +24,7 @@ async fn running_worker_logic_when_only_spawners_exist() {
 
         async fn load_store(&mut self, system_info: &System) -> ResultBtAny<PersistentStore> {
             Ok(PersistentStore {
-                process: String::from(DEFAULT_IRACING_SIMULATOR),
+                simulator: String::from(DEFAULT_IRACING_SIMULATOR),
                 selections: CpuSelections::new_evens_selected(12),
             })
         }
@@ -35,7 +35,7 @@ async fn running_worker_logic_when_only_spawners_exist() {
             name: &str,
         ) -> Vec<IrAProcess> {
             match name {
-                IRACING_SIMULATOR_SPAWNERS => vec![IrAProcess { id: 7 }],
+                DEFAULT_SIMULATOR_SPAWNERS => vec![IrAProcess { id: 7 }],
                 DEFAULT_IRACING_SIMULATOR => vec![],
                 _ => vec![],
             }
@@ -115,7 +115,7 @@ async fn running_worker_logic_when_both_processes_exist() {
 
         async fn load_store(&mut self, system_info: &System) -> ResultBtAny<PersistentStore> {
             Ok(PersistentStore {
-                process: String::from(DEFAULT_IRACING_SIMULATOR),
+                simulator: String::from(DEFAULT_IRACING_SIMULATOR),
                 selections: CpuSelections::new_evens_selected(12),
             })
         }
@@ -126,7 +126,7 @@ async fn running_worker_logic_when_both_processes_exist() {
             name: &str,
         ) -> Vec<IrAProcess> {
             match name {
-                IRACING_SIMULATOR_SPAWNERS => vec![IrAProcess { id: 7 }],
+                DEFAULT_SIMULATOR_SPAWNERS => vec![IrAProcess { id: 7 }],
                 DEFAULT_IRACING_SIMULATOR => vec![IrAProcess { id: 13 }],
                 _ => vec![],
             }
