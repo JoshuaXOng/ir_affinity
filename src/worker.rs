@@ -151,7 +151,8 @@ pub(crate) async fn run_worker_logic<WOps: WorkerOperations_>(
             let e = are_simulators_synced.err().map(|e| e.get().to_string());
             worker_status.send_replace(Some(WorkerHeartbeat::now(is_synced, e)));
 
-            if are_any_spawners {
+            let is_synced = is_synced.unwrap_or(false);
+            if is_synced && are_any_spawners {
                 _ = worker_operations
                     .set_processes_affinity(
                         &simulator_spawners,
