@@ -1,6 +1,7 @@
 use crate::ir::{DEFAULT_IRACING_SIMULATOR, DEFAULT_SIMULATOR_SPAWNERS};
 use crate::persistence::PersistentStore;
 pub use crate::ui::errors::run_error_ui;
+use crate::ui::logs::MessageLog;
 use crate::worker::WorkerHeartbeat;
 use iced::font::Weight;
 use iced::widget::{button, column, rule, scrollable, text, text_input};
@@ -11,12 +12,13 @@ use tokio::sync::watch;
 use tracing::error;
 
 mod errors;
+mod logs;
 mod selection;
 mod status;
 
 const MAIN_WINDOW_NAME: &str = "Ir Affinity";
 
-const INITIAL_WINDOW_SIZE: (u32, u32) = (400, 420);
+const INITIAL_WINDOW_SIZE: (u32, u32) = (400, 530);
 
 const IS_WINDOW_RESIZABLE: bool = false;
 
@@ -49,6 +51,7 @@ struct IrAffinity {
     simulator_name: String,
     cpu_selection: selection::CpuSelection,
     worker_status: status::WorkerStatus,
+    message_log: logs::MessageLog,
     sqlite: SqlitePool,
     is_saving: bool,
     progress: usize,
@@ -62,6 +65,7 @@ impl IrAffinity {
             simulator_name: persistent_store.simulator.clone(),
             cpu_selection: selection::CpuSelection::new(persistent_store.selections.clone()),
             worker_status: WorkerStatus::new(),
+            message_log: MessageLog::new(),
             sqlite: sqlite_pool.clone(),
             progress: 0,
             is_saving: false,
@@ -108,6 +112,8 @@ impl IrAffinity {
 
         let status_component = self.worker_status.view().map(Message::WorkerStatus);
 
+        let message_log = self.message_log.view().map(Message::MessageLog);
+
         scrollable(
             column![
                 error_message,
@@ -116,7 +122,9 @@ impl IrAffinity {
                 selection_component,
                 save_button,
                 rule::horizontal(2),
-                status_component
+                status_component,
+                rule::horizontal(2),
+                message_log
             ]
             .width(Length::Fill)
             .spacing(16)
@@ -174,6 +182,10 @@ impl IrAffinity {
                 self.progress = self.progress.wrapping_add(1);
                 Task::none()
             }
+            Message::MessageLog(message) => {
+                self.message_log.update(message);
+                Task::none()
+            }
         }
     }
 }
@@ -186,6 +198,7 @@ enum Message {
     ShouldSave,
     ShouldSave_(Result<(), String>),
     WorkerStatus(status::Message),
+    MessageLog(logs::Message),
     Progress,
 }
 
